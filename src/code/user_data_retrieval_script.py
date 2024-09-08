@@ -76,7 +76,7 @@ def get_users(user_ids=None):
     if user_ids:
         query = f"""
             select
-                la.id
+                la.id, u.uuid
             from
                 users u
             inner join
@@ -92,14 +92,20 @@ def get_users(user_ids=None):
     else:
         query = """
                 select
-                    id
-                from
-                    learning_accounts
-                where
-                    deleted_at is null limit 1000;
+                la.id, u.uuid
+            from
+                users u
+            inner join
+                learning_accounts la
+            on 
+                u.id=la.base_user_id
+            where
+                u.is_active=true
+                and u.deleted_at is null
+                and la.deleted_at is null limit 1000;
             """
     solis_cur.execute(query)
-    return [val[0] for val in solis_cur.fetchall()]
+    return {val[0]: val[1] for val in solis_cur.fetchall()}
 
 
 def get_preferred_work_locations(user_ids: List[int]):
@@ -286,7 +292,6 @@ def get_user_profiles(user_ids: List[int]):
                     when gender = 2 then 'FEMALE'
                     when gender = 3 then 'PREFER_NOT_TO_SAY'
                 end as gender,
-                nationality_id,
                 country_id,
                 state_id,
                 is_verified,
@@ -303,7 +308,6 @@ def get_user_profiles(user_ids: List[int]):
         "user_id",
         "date_of_birth",
         "gender",
-        "nationality_id",
         "country_id",
         "state_id",
         "is_verified",
@@ -551,22 +555,25 @@ def get_user_work_experiences(user_ids: List[int]):
                     when organisation_type is null then 'OTHERS'
                 end as organisation_type,
                 other_organisation_type,
-                "country_id",
-                "state_id",
-                "currently_working",
+                country_id,
+                state_id,
+                currently_working,
                 TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
                 TO_CHAR(end_date, 'YYYY-MM-DD') as end_date,
-                "salary",
-                "currency_id",
-                "curriculum_id",
-                "teaching_level_id",
-                "teaching_role_id",
-                (SELECT json_agg(we.subject_id) FROM work_experience_subjects we WHERE we.work_experience_id = uwe.id) AS subjects
+                salary,
+                currency_id,
+                curriculum_id,
+                teaching_level_id,
+                teaching_role_id,
+                subject_id
             from
                 user_work_experiences uwe
+            left join work_experience_subjects wes
+                on wes.work_experience_id = uwe.id
             where
-                deleted_at is null
-                and learning_user_id in {tuple(user_ids)};
+                uwe.deleted_at is null
+                and wes.deleted_at is null
+                and uwe.learning_user_id in {tuple(user_ids)};
         """
 
     columns = [
@@ -587,7 +594,7 @@ def get_user_work_experiences(user_ids: List[int]):
         "curriculum_id",
         "teaching_level_id",
         "teaching_role_id",
-        "subjects",
+        "subject_id",
     ]
     gravity_columns = {
         "countries": "country_id",
@@ -596,6 +603,7 @@ def get_user_work_experiences(user_ids: List[int]):
         "curriculum": "curriculum_id",
         "teaching_levels": "teaching_level_id",
         "teaching_roles": "teaching_role_id",
+        "subjects": "subject_id",
     }
     return get_data(query, columns, gravity_columns)
 
@@ -608,9 +616,8 @@ def chunking(data, size):
 
 def main():
     user_uuid_df = pd.read_csv(r"D:\Workspace\vector-search\src\data\user_uuids.csv")
-    user_id_list = get_users(user_uuid_df["user_uuid"].to_list())
-    for user_ids in chunking(user_id_list, 1000):
-        data = []
+    user_id_dict = get_users(user_uuid_df["user_uuid"].to_list())
+    for user_ids in chunking(list(user_id_dict.keys()), 1000):
         preferred_work_locations = get_preferred_work_locations(user_ids)
         user_awards = get_user_awards(user_ids)
         user_certifications = get_user_certifications(user_ids)
@@ -626,10 +633,11 @@ def main():
         user_subject_interests = get_user_subject_interests(user_ids)
         user_test_scores = get_user_test_scores(user_ids)
         user_work_experiences = get_user_work_experiences(user_ids)
+        data = []
         for user_id in user_ids:
             data.append(
                 {
-                    "user_id": user_id,
+                    "user_id": user_id_dict[user_id],
                     "preferred_work_locations": preferred_work_locations.get(
                         user_id, []
                     ),
@@ -651,7 +659,7 @@ def main():
                     "user_work_experiences": user_work_experiences.get(user_id, []),
                 }
             )
-        with open(r"D:\Workspace\vector-search\src\data\data.json", "a") as file:
+        with open(r"D:\Workspace\vector-search\src\data\data.json", "w") as file:
             file.write(json.dumps(data))
 
 
